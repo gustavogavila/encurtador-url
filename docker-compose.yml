@@ -1,13 +1,30 @@
 services:
   traefik:
-    image: traefik:v3.2
+    image: traefik:v2.11
     container_name: encurtador-url-traefik
     command:
+      # API e Dashboard
       - "--api.dashboard=true"
+
+      # Providers
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
+
+      # Entrypoints
       - "--entrypoints.web.address=:80"
       - "--entrypoints.websecure.address=:443"
+
+      # Redirecionamento HTTP -> HTTPS global
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+
+      # Configuração de certificados (Let's Encrypt)
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/certificates/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+
+      # Logs
       - "--log.level=INFO"
       - "--accesslog=true"
     ports:
@@ -21,9 +38,17 @@ services:
       - encurtador-network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+
+      # Dashboard com HTTPS
+      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_DOMAIN:-traefik.localhost}`)"
       - "traefik.http.routers.dashboard.service=api@internal"
-      - "traefik.http.routers.dashboard.entrypoints=web"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+
+      # Autenticação básica para o dashboard (opcional)
+      - "traefik.http.routers.dashboard.middlewares=dashboard-auth"
+      - "traefik.http.middlewares.dashboard-auth.basicauth.users=${TRAEFIK_DASHBOARD_AUTH:-admin:$$apr1$$8EVjn/nj$$GiLUZqcbueTFeD23SuB6x0}"
     restart: unless-stopped
 
   postgres:
@@ -60,13 +85,25 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      traefik:
+        condition: service_started
     networks:
       - encurtador-network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.encurtador.rule=Host(`encurtador.localhost`)"
-      - "traefik.http.routers.encurtador.entrypoints=web"
+
+      # Roteamento HTTPS
+      - "traefik.http.routers.encurtador.rule=Host(`${APP_DOMAIN:-encurtador.localhost}`)"
+      - "traefik.http.routers.encurtador.entrypoints=websecure"
+      - "traefik.http.routers.encurtador.tls=true"
+      - "traefik.http.routers.encurtador.tls.certresolver=letsencrypt"
       - "traefik.http.services.encurtador.loadbalancer.server.port=8080"
+
+      # Headers de segurança
+      - "traefik.http.middlewares.security-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.security-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.security-headers.headers.stsPreload=true"
+      - "traefik.http.routers.encurtador.middlewares=security-headers"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
